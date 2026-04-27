@@ -40,7 +40,7 @@ async function fetchProjects() {
   // Cast a wide net — grab every unique /projects/NUMBER link
   $("a[href]").each((_, el) => {
     const href = $(el).attr("href") || "";
-    if (/\/projects\/\d+/.test(href)) {
+    if (href.includes("/projects/") && !href.includes("?") && href !== "/projects/") {
       const url = href.startsWith("http") ? href : `https://mostaql.com${href}`;
       const title = $(el).text().trim();
       if (!projects.find((p) => p.id === url) && title.length > 2) {
