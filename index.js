@@ -96,6 +96,6 @@ async function checkForNewProjects() {
   }
 }
 
-console.log("🤖 Mostaql WhatsApp Bot started!\n");
+console.log("🤖 Mostaql WhatsApp Bot v2 started!\n");
 checkForNewProjects();
 setInterval(checkForNewProjects, CHECK_INTERVAL_MS);
