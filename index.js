@@ -7,7 +7,7 @@ const twilio = require("twilio");
 const MOSTAQL_URL =
   "https://mostaql.com/projects?skills=html,html5,CSS3,css,javascript,Front-End,%D8%A8%D8%B1%D9%85%D8%AC%D8%A9-%D9%85%D9%88%D8%A7%D9%82%D8%B9,%D8%AA%D8%B5%D9%85%D9%8A%D9%85-%D9%88%D9%8A%D8%A8,website-design,UIUX,node-js,express-js,landing-pages,Landing-Page-Creation&sort=latest";
 
-const CHECK_INTERVAL_MS = 30 * 1000; // 30 seconds
+const CHECK_INTERVAL_MS = 30 * 1000;
 
 const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
@@ -15,7 +15,6 @@ const twilioClient = twilio(
 );
 
 // ─── State ──────────────────────────────────────────────────────────────────
-// Stores IDs/URLs of projects already seen so we don't re-notify
 const seenProjects = new Set();
 let isFirstRun = true;
 
@@ -23,50 +22,72 @@ let isFirstRun = true;
 async function fetchProjects() {
   const { data } = await axios.get(MOSTAQL_URL, {
     headers: {
-      // Mimic a real browser so Mostaql doesn't block the request
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
       "Accept-Language": "ar,en;q=0.9",
-      Accept:
-        "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+      "Accept-Encoding": "gzip, deflate, br",
+      "Connection": "keep-alive",
+      "Upgrade-Insecure-Requests": "1",
+      "Cache-Control": "max-age=0",
     },
     timeout: 15000,
   });
 
   const $ = cheerio.load(data);
+
+  // Debug: print page title and first 300 chars to confirm we're getting real HTML
+  console.log("  📄 Page title:", $("title").text().trim());
+  console.log("  📄 HTML preview:", data.substring(0, 300).replace(/\n/g, " "));
+
   const projects = [];
 
-  // Mostaql wraps each project in a <tr> inside #projects-table,
-  // or in .project--row cards. We target both selectors to be safe.
-  $("table#projects-table tbody tr, .projects-list .project--row").each(
-    (_, el) => {
-      // Try the table layout first
-      let titleEl = $(el).find("h2.project__title a, h3.project__title a");
-      if (!titleEl.length) {
-        // Fallback for card layout
-        titleEl = $(el).find("a.project-title, a[href*='/projects/']").first();
-      }
+  // Try all possible selectors Mostaql might use
+  const selectors = [
+    "tr.project-row",
+    ".project--card",
+    ".project--row",
+    "article.project",
+    ".projects-list li",
+    "table.projects-table tbody tr",
+    "[data-project-id]",
+    ".project_title a",
+    "h2.project__title a",
+    "h3.project__title a",
+    ".project-title-row a",
+  ];
 
-      const href = titleEl.attr("href") || $(el).find("a[href*='/projects/']").first().attr("href");
-      const title = titleEl.text().trim() || "مشروع جديد";
+  for (const selector of selectors) {
+    const found = $(selector);
+    if (found.length > 0) {
+      console.log(`  ✅ Selector "${selector}" matched ${found.length} elements`);
+    }
+  }
 
-      if (href) {
-        const url = href.startsWith("http")
-          ? href
-          : `https://mostaql.com${href}`;
-        projects.push({ id: url, title, url });
+  // Main approach: find all links to /projects/ pages
+  $("a[href]").each((_, el) => {
+    const href = $(el).attr("href");
+    // Match links like /projects/12345 or /projects/12345-title
+    if (href && /\/projects\/\d+/.test(href)) {
+      const url = href.startsWith("http") ? href : `https://mostaql.com${href}`;
+      // Deduplicate by URL
+      if (!projects.find((p) => p.id === url)) {
+        const title = $(el).text().trim() || "مشروع جديد";
+        if (title.length > 3) { // Skip very short/empty link texts
+          projects.push({ id: url, title, url });
+        }
       }
     }
-  );
+  });
 
+  console.log(`  🔍 Found ${projects.length} project links total`);
   return projects;
 }
 
 // ─── WhatsApp Sender ─────────────────────────────────────────────────────────
 async function sendWhatsApp(message) {
   await twilioClient.messages.create({
-    from: `whatsapp:${process.env.TWILIO_WHATSAPP_FROM}`, // e.g. whatsapp:+14155238886
-    to: `whatsapp:${process.env.MY_PHONE_NUMBER}`,         // e.g. whatsapp:+9665XXXXXXXX
+    from: `whatsapp:${process.env.TWILIO_WHATSAPP_FROM}`,
+    to: `whatsapp:${process.env.MY_PHONE_NUMBER}`,
     body: message,
   });
 }
@@ -83,7 +104,6 @@ async function checkForNewProjects() {
     }
 
     if (isFirstRun) {
-      // On first run: seed the set so we don't flood the user with old projects
       projects.forEach((p) => seenProjects.add(p.id));
       console.log(`  ✅ First run: seeded ${seenProjects.size} existing projects. Watching for NEW ones...`);
       isFirstRun = false;
@@ -110,7 +130,6 @@ async function checkForNewProjects() {
       await sendWhatsApp(message);
       console.log(`  📤 Sent: ${project.url}`);
 
-      // Small delay between messages to respect Twilio rate limits
       await new Promise((r) => setTimeout(r, 1000));
     }
   } catch (err) {
@@ -120,7 +139,7 @@ async function checkForNewProjects() {
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 console.log("🤖 Mostaql WhatsApp Bot started!");
-console.log(`   Checking every ${CHECK_INTERVAL_MS / 1000}s for new projects...\n`);
+console.log(`   Checking every ${CHECK_INTERVAL_MS / 1000}s...\n`);
 
-checkForNewProjects(); // Run immediately on startup
+checkForNewProjects();
 setInterval(checkForNewProjects, CHECK_INTERVAL_MS);
